@@ -1,40 +1,60 @@
 /**
- * Расчёт эффекта правила PRICE-001 (services/rules.service.priceGapEffect).
- * Проверка на числах, посчитанных вручную: эффект = |разрыв, ₽| × объём, л/день × |эластичность|.
+ * Расчёт эффекта изменения цены (services/rules.service: priceChangeEffect, volumeChangeShare).
+ * Модель: постоянная эластичность e, V = V₀·(p/p₀)^e. Выручка R = p·V.
+ * ΔR = V₀·p₀·((1+Δ/p₀)^(1+e) − 1). Проверка на числах, посчитанных вручную.
  */
-import { priceGapEffect } from '@services/rules.service';
+import { priceChangeEffect, volumeChangeShare } from '@services/rules.service';
 
-describe('priceGapEffect (PRICE-001)', () => {
-  describe('позитивные сценарии: известные числа', () => {
-    it('разрыв 2 ₽, объём 1000 л/день, эластичность −0,5 → 1000 ₽/день', () => {
-      // 2 × 1000 × 0,5 = 1000
-      expect(priceGapEffect(2, 1000, -0.5)).toBe(1000);
-    });
-
-    it('разрыв 1 ₽, объём 2000 л/день, эластичность −1,2 → 2400 ₽/день', () => {
-      // 1 × 2000 × 1,2 = 2400
-      expect(priceGapEffect(1, 2000, -1.2)).toBe(2400);
-    });
-
-    it('разрыв 1,5 ₽, объём 500 л/день, эластичность −0,8 → 600 ₽/день', () => {
-      // 1,5 × 500 × 0,8 = 600
-      expect(priceGapEffect(1.5, 500, -0.8)).toBe(600);
-    });
+describe('priceChangeEffect (выручка в день при изменении цены)', () => {
+  it('снижение цены на 5% при неэластичном спросе (e = −0,5) уменьшает выручку', () => {
+    // p₀ = 70, V₀ = 1000, Δ = −3,5: ΔR = 1000·70·(0,95^0,5 − 1) ≈ −1772
+    const v = priceChangeEffect(70, 1000, -3.5, -0.5);
+    expect(v).toBeLessThan(0);
+    expect(v).toBe(Math.round(1000 * 70 * (Math.sqrt(0.95) - 1)));
   });
 
-  describe('граничные и служебные случаи', () => {
-    it('знак эластичности не меняет эффект (берётся модуль)', () => {
-      expect(priceGapEffect(2, 1000, 0.5)).toBe(priceGapEffect(2, 1000, -0.5));
-    });
+  it('снижение цены на 5% при эластичном спросе (e = −1,5) увеличивает выручку', () => {
+    // ΔR = 1000·70·(0,95^(−0,5) − 1) ≈ +1819
+    const v = priceChangeEffect(70, 1000, -3.5, -1.5);
+    expect(v).toBeGreaterThan(0);
+    expect(v).toBe(Math.round(1000 * 70 * (0.95 ** -0.5 - 1)));
+  });
 
-    it('нулевой разрыв или нулевой объём дают 0', () => {
-      expect(priceGapEffect(0, 1000, -0.5)).toBe(0);
-      expect(priceGapEffect(2, 0, -0.5)).toBe(0);
-    });
+  it('при нулевой эластичности выручка меняется ровно на объём × изменение цены', () => {
+    // e = 0: объём не меняется, ΔR = V₀·Δ = 1000·(−3,5) = −3500
+    expect(priceChangeEffect(70, 1000, -3.5, 0)).toBe(-3500);
+  });
 
-    it('результат округляется до рублей', () => {
-      // 0,333 × 100 × 1 = 33,3 → 33
-      expect(priceGapEffect(0.333, 100, -1)).toBe(33);
-    });
+  it('при единичной эластичности (e = −1) выручка не меняется', () => {
+    expect(priceChangeEffect(70, 1000, -3.5, -1)).toBe(0);
+  });
+
+  it('повышение цены при неэластичном спросе увеличивает выручку', () => {
+    expect(priceChangeEffect(70, 1000, 2, -0.5)).toBeGreaterThan(0);
+  });
+
+  it('нулевое изменение цены или нулевой объём дают 0', () => {
+    expect(priceChangeEffect(70, 1000, 0, -0.5)).toBe(0);
+    expect(priceChangeEffect(70, 0, -3.5, -0.5)).toBe(0);
+  });
+
+  it('результат округляется до рублей', () => {
+    expect(Number.isInteger(priceChangeEffect(70, 1234, -1.7, -0.9))).toBe(true);
+  });
+});
+
+describe('volumeChangeShare (доля изменения объёма)', () => {
+  it('при снижении цены на 5% и e = −1,5 объём растёт на 0,95^(−1,5) − 1', () => {
+    expect(volumeChangeShare(70, -3.5, -1.5)).toBeCloseTo(0.95 ** -1.5 - 1, 10);
+  });
+
+  it('согласован с выручкой: V₁·p₁ − V₀·p₀ равно ΔR на единицу объёма', () => {
+    const p0 = 70;
+    const delta = -3.5;
+    const e = -0.7;
+    const volume = 1000;
+    const share = volumeChangeShare(p0, delta, e);
+    const revChange = volume * (1 + share) * (p0 + delta) - volume * p0;
+    expect(Math.abs(revChange - priceChangeEffect(p0, volume, delta, e))).toBeLessThanOrEqual(0.5);
   });
 });

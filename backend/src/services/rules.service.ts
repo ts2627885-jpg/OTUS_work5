@@ -35,12 +35,22 @@ const FUELS = ['AI92', 'AI95', 'DT']; // топливо, которое есть
 export type Priority = 'URGENT' | 'HIGH' | 'MEDIUM' | 'LOW';
 
 /**
- * Эффект PRICE-001, ₽ в день: |разрыв| × средний дневной объём за 7 дней × |эластичность|.
- * Первое приближение: ΔV ≈ V·ε·Δp/p, и ΔV·p = V·ε·Δp. Знак эластичности не учитывается.
- * Чистая функция: её можно проверять на известных числах (см. tests/unit/services/rules.effect.test.ts).
+ * Изменение объёма при изменении цены с p₀ на p₀ + Δ при постоянной эластичности e:
+ *   V = V₀·(p/p₀)^e  →  доля изменения объёма = (1 + Δ/p₀)^e − 1.
  */
-export function priceGapEffect(absGap: number, volumePerDay: number, elasticity: number): number {
-  return Math.round(absGap * volumePerDay * Math.abs(elasticity));
+export function volumeChangeShare(p0: number, deltaPrice: number, elasticity: number): number {
+  return (1 + deltaPrice / p0) ** elasticity - 1;
+}
+
+/**
+ * Изменение выручки в ₽ в день при изменении цены с p₀ на p₀ + Δ (постоянная эластичность e):
+ *   R = p·V = p·V₀·(p/p₀)^e  →  ΔR = V₀·p₀·((1 + Δ/p₀)^(1+e) − 1).
+ * Знак важен: при |e| < 1 снижение цены уменьшает выручку, при |e| > 1 — увеличивает.
+ * Чистая функция: проверяется на известных числах (tests/unit/services/rules.effect.test.ts).
+ */
+export function priceChangeEffect(p0: number, volumePerDay: number, deltaPrice: number, elasticity: number): number {
+  // || 0 убирает -0, который дают округление и умножение на отрицательные числа
+  return Math.round(volumePerDay * p0 * ((1 + deltaPrice / p0) ** (1 + elasticity) - 1)) || 0;
 }
 
 export interface RuleRecommendation {
@@ -279,8 +289,10 @@ export async function computeRules(override?: { elasticityDays?: number }) {
         // точечная оценка самой станции (а не сетевой резерв), если она есть
         const rawE = Number.isFinite(own.rawElasticity) ? own.rawElasticity : Number.isFinite(pe.rawElasticity) ? pe.rawElasticity : null;
         const effEl = elasticity !== null ? elasticity : rawE !== null && rawE < 0 ? rawE : null;
-        const effect = effEl !== null && volMa7 !== null
-          ? `≈ ₽${priceGapEffect(absGap, volMa7, effEl)}/день (${elasticity !== null ? 'оценка по эластичности' : 'низкая надёжность, эластичность'} ${effEl.toFixed(2)})`
+        // Выручка в день при переходе на цель (знак важен: при неэластичном спросе снижение цены уменьшает выручку)
+        const dRev = effEl !== null && volMa7 !== null ? priceChangeEffect(ourPrice, volMa7, target - ourPrice, effEl) : null;
+        const effect = dRev !== null
+          ? `≈ ${dRev >= 0 ? '+' : '−'}${Math.abs(dRev)} ₽/день (${elasticity !== null ? 'оценка по эластичности' : 'низкая надёжность, эластичность'} ${effEl.toFixed(2)})`
           : 'эффект не рассчитан: нет продаж или эластичность не определена';
         out.push({
           id: `PRICE-001-${code}-${fuel}`, rule: 'PRICE-001', title: 'Выравнивание цены с рынком',

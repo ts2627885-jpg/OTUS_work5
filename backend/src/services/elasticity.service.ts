@@ -91,7 +91,8 @@ async function computePooledElasticity(fuel: string, days: number, asOf: string,
         GROUP BY station_code, sale_date),
      med AS (SELECT station_code, percentile_cont(0.5) WITHIN GROUP (ORDER BY t) AS m FROM tot GROUP BY station_code)
      SELECT f.station_code, f.sale_date, f.sales_volume::float AS vol, f.price::float AS price,
-            EXTRACT(ISODOW FROM c.cal_date)::int AS day_of_week, c.is_holiday, c.month, tot.t, med.m
+            EXTRACT(ISODOW FROM c.cal_date)::int AS day_of_week, c.is_holiday, c.month, tot.t, med.m,
+            f.sale_date::text AS d
        FROM azs.fuel_daily f
        JOIN azs.calendar c ON c.cal_date = f.sale_date
        JOIN tot ON tot.station_code = f.station_code AND tot.sale_date = f.sale_date
@@ -101,7 +102,10 @@ async function computePooledElasticity(fuel: string, days: number, asOf: string,
         AND f.sale_date > $1::date - ($2 || ' days')::interval AND f.sale_date <= $1::date`,
     [asOf, days, fuel, stationCode ?? null]
   );
-  const rows = all.rows.filter(r => r.t >= CLOSED_DAY_SHARE * r.m);
+  // Нерабочие дни исключаем; наблюдения упорядочиваем по станции и дате (для автокорреляции)
+  const rows = all.rows
+    .filter(r => r.t >= CLOSED_DAY_SHARE * r.m)
+    .sort((a, b) => (a.station_code < b.station_code ? -1 : a.station_code > b.station_code ? 1 : a.d < b.d ? -1 : a.d > b.d ? 1 : 0));
   const excludedDays = all.rows.length - rows.length;
   const stations = [...new Set(rows.map(r => r.station_code))].sort();
   const dows = [2, 3, 4, 5, 6, 7];   // день недели, базовый — понедельник (1)
@@ -131,8 +135,10 @@ async function computePooledElasticity(fuel: string, days: number, asOf: string,
   const width = X[0].length;
   const keep = [0, 1];
   for (let j = 2; j < width; j++) {
-    const sum = X.reduce((acc, row) => acc + row[j], 0);
-    if (sum > 0 && sum < n) keep.push(j);
+    // признак нужен, если он меняется в выборке (для дамми — есть и 0, и 1; для непрерывных — есть разброс)
+    let mn = Infinity, mx = -Infinity;
+    for (const row of X) { if (row[j] < mn) mn = row[j]; if (row[j] > mx) mx = row[j]; }
+    if (mx > mn) keep.push(j);
   }
   const Xk = X.map(row => keep.map(j => row[j]));
   const k = keep.length;
@@ -154,15 +160,18 @@ async function computePooledElasticity(fuel: string, days: number, asOf: string,
   let rss = 0;
   const meanY = y.reduce((a, b) => a + b, 0) / y.length;
   let tss = 0;
+  const resid: number[] = [];
   for (let i = 0; i < Xk.length; i++) {
     const fit = Xk[i].reduce((s, v, j) => s + v * beta[j], 0);
+    resid.push(y[i] - fit);
     rss += (y[i] - fit) ** 2;
     tss += (y[i] - meanY) ** 2;
   }
-  const sigma2 = rss / (n - k);
   const r2 = tss > 0 ? 1 - rss / tss : null;
   const b = beta[1];
-  const se = Math.sqrt(sigma2 * inv[1][1]);
+  // Ошибка Ньюи–Уэста (окно 7 дней внутри станции): дневные остатки автокоррелированы,
+  // классическая ошибка завышала бы значимость
+  const se = neweyWestSe(Xk, resid, inv, rows.map(r => ({ station: r.station_code, day: Date.parse(r.d) / 86400000 })), 7, 1);
   const t = se > 0 ? b / se : null;
 
   // разброс цены: диапазон ln-цены по всей выборке (без станционных средних)
@@ -200,6 +209,37 @@ async function computePooledElasticity(fuel: string, days: number, asOf: string,
     reliable,
     reason
   };
+}
+
+/**
+ * Стандартная ошибка коэффициента `coef` по Ньюи–Уэсту (ядро Бартлетта, окно `lag`).
+ * Автокорреляция учитывается только внутри станции: наблюдения сопоставляются по (станция, день).
+ *   V = (X'X)⁻¹ · S · (X'X)⁻¹,   S = Σ_t s_t s_t' + Σ_l w_l Σ_t (s_t s_{t−l}' + s_{t−l} s_t'),  s_t = x_t·e_t
+ */
+export function neweyWestSe(X: number[][], resid: number[], inv: number[][], keys: { station: string; day: number }[], lag: number, coef: number): number {
+  const k = inv.length;
+  const index = new Map<string, number>();
+  keys.forEach((kk, i) => index.set(`${kk.station}|${kk.day}`, i));
+  const score = X.map((row, i) => row.map(v => v * resid[i]));
+  const S: number[][] = Array.from({ length: k }, () => new Array(k).fill(0));
+  const add = (s: number[], t: number[], w: number) => {
+    for (let a = 0; a < k; a++) for (let b = 0; b < k; b++) S[a][b] += w * s[a] * t[b];
+  };
+  for (let i = 0; i < X.length; i++) {
+    add(score[i], score[i], 1);
+    for (let l = 1; l <= lag; l++) {
+      const j = index.get(`${keys[i].station}|${keys[i].day + l}`);
+      if (j === undefined) continue;
+      const w = 1 - l / (lag + 1);
+      add(score[i], score[j], w);
+      add(score[j], score[i], w);
+    }
+  }
+  const tmp: number[][] = Array.from({ length: k }, (_, i) =>
+    Array.from({ length: k }, (_, b) => { let s = 0; for (let a = 0; a < k; a++) s += inv[i][a] * S[a][b]; return s; }));
+  const V = Array.from({ length: k }, (_, i) =>
+    Array.from({ length: k }, (_, j) => { let s = 0; for (let b = 0; b < k; b++) s += tmp[i][b] * inv[b][j]; return s; }));
+  return Math.sqrt(Math.max(V[coef][coef], 0));
 }
 
 const round = (v: number, d = 3) => Math.round(v * 10 ** d) / 10 ** d;
