@@ -199,7 +199,7 @@ export async function computeRules(override?: { elasticityDays?: number }) {
 
   // 4. Наблюдения конкурентов за 30 дней (с брендом)
   const { rows: compRows } = await pool.query(
-    `SELECT c.station_code, c.brand, cp.fuel_code, cp.observed_at::date::text AS d,
+    `SELECT c.station_code, c.competitor_id, c.brand, cp.fuel_code, cp.observed_at::date::text AS d,
             cp.observed_at::text AS ts, cp.price::float AS price
        FROM azs.competitor_price cp JOIN azs.competitor c USING (competitor_id)
       WHERE cp.is_offered AND cp.price > 0
@@ -286,11 +286,11 @@ export async function computeRules(override?: { elasticityDays?: number }) {
       const volMa7 = mean(last7);
       const volTrendPct = volMa7 !== null && mean(prev7) ? (volMa7 / (mean(prev7) as number) - 1) * 100 : null;
 
-      // Конкуренты: последнее наблюдение каждого бренда за 14 дней
+      // Конкуренты: последнее наблюдение каждой АЗС конкурента за 14 дней (две АЗС одного бренда — два значения)
       const comp = compRows.filter(r => r.station_code === code && r.fuel_code === fuel && dayDiff(asOf, r.d) < S.comp_window_days);
-      const lastByBrand = new Map<string, number>();
-      for (const r of comp) lastByBrand.set(r.brand, r.price); // comp отсортирован по времени
-      const compPrices = [...lastByBrand.values()];
+      const lastByCompetitor = new Map<number, number>();
+      for (const r of comp) lastByCompetitor.set(r.competitor_id, r.price); // comp отсортирован по времени
+      const compPrices = [...lastByCompetitor.values()];
       const compMed = median(compPrices);
       const compMax = compPrices.length ? Math.max(...compPrices) : null;
 
