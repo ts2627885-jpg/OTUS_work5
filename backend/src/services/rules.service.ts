@@ -205,7 +205,7 @@ export async function computeRules(override?: { elasticityDays?: number }) {
       WHERE cp.is_offered AND cp.price > 0
         AND cp.observed_at::date > $1::date - ($2 || ' days')::interval
         AND cp.observed_at::date <= $1::date AND cp.fuel_code = ANY($3)
-      ORDER BY cp.observed_at`,
+      ORDER BY cp.observed_at, c.competitor_id, cp.price`,
     [asOf, S.price_window_days, FUELS]
   );
 
