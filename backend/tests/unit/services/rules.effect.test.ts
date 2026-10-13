@@ -3,7 +3,29 @@
  * Модель: постоянная эластичность e, V = V₀·(p/p₀)^e. Выручка R = p·V.
  * ΔR = V₀·p₀·((1+Δ/p₀)^(1+e) − 1). Проверка на числах, посчитанных вручную.
  */
-import { priceChangeEffect, volumeChangeShare } from '@services/rules.service';
+import { priceChangeEffect, volumeChangeShare, priceTargetDecision } from '@services/rules.service';
+
+describe('priceTargetDecision (действие PRICE-001 по знаку эффекта)', () => {
+  it('подъём цены при эластичном спросе снижает выручку: «Установить цену» не выводится', () => {
+    // DT: e = −2,45, подъём 79,09 → 80,10, выручка падает
+    const d = priceTargetDecision(80.1, -2.45, -55102);
+    expect(d.lowersRevenue).toBe(true);
+    expect(d.action).toContain('Цену не менять');
+    expect(d.action).not.toContain('Установить цену');
+  });
+
+  it('подъём цены, который увеличивает выручку, остаётся указанием', () => {
+    const d = priceTargetDecision(80.1, -0.5, 1500);
+    expect(d.lowersRevenue).toBe(false);
+    expect(d.action).toBe('Установить цену 80.10 ₽/л');
+  });
+
+  it('без оценки эластичности остаётся ориентиром, даже если эффекта нет', () => {
+    const d = priceTargetDecision(80.1, null, null);
+    expect(d.lowersRevenue).toBe(false);
+    expect(d.action).toBe('Ориентир 80.10 ₽/л (эффект не оценён)');
+  });
+});
 
 describe('priceChangeEffect (выручка в день при изменении цены)', () => {
   it('снижение цены на 5% при неэластичном спросе (e = −0,5) уменьшает выручку', () => {

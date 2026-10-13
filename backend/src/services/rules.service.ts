@@ -53,6 +53,22 @@ export function priceChangeEffect(p0: number, volumePerDay: number, deltaPrice: 
   return Math.round(volumePerDay * p0 * ((1 + deltaPrice / p0) ** (1 + elasticity) - 1)) || 0;
 }
 
+/**
+ * Действие PRICE-001 по цели выравнивания. Если модель оценена и переход к цели снижает выручку,
+ * указание «Установить цену» не выводится: цена остаётся, а причина написана в действии.
+ */
+export function priceTargetDecision(target: number, elasticity: number | null, dRev: number | null): { action: string; lowersRevenue: boolean } {
+  const lowersRevenue = elasticity !== null && dRev !== null && dRev < 0;
+  if (lowersRevenue) {
+    return { action: `Цену не менять: переход к ${target.toFixed(2)} ₽/л снизит выручку на ${Math.abs(dRev as number)} ₽/день`, lowersRevenue };
+  }
+  // без оценки эластичности цена — только ориентир, а не указание
+  return {
+    action: elasticity !== null ? `Установить цену ${target.toFixed(2)} ₽/л` : `Ориентир ${target.toFixed(2)} ₽/л (эффект не оценён)`,
+    lowersRevenue
+  };
+}
+
 export interface RuleRecommendation {
   id: string;
   rule: string;
@@ -294,11 +310,11 @@ export async function computeRules(override?: { elasticityDays?: number }) {
         const effect = dRev !== null
           ? `≈ ${dRev >= 0 ? '+' : '−'}${Math.abs(dRev)} ₽/день (${elasticity !== null ? 'оценка по эластичности' : 'низкая надёжность, эластичность'} ${effEl.toFixed(2)})`
           : 'эффект не рассчитан: нет продаж или эластичность не определена';
+        const decision = priceTargetDecision(target, elasticity, dRev);
         out.push({
           id: `PRICE-001-${code}-${fuel}`, rule: 'PRICE-001', title: 'Выравнивание цены с рынком',
-          station: st.name, fuel, priority, effect,
-          // без оценки эластичности цена — только ориентир, а не указание
-          action: elasticity !== null ? `Установить цену ${target.toFixed(2)} ₽/л` : `Ориентир ${target.toFixed(2)} ₽/л (эффект не оценён)`,
+          station: st.name, fuel, priority: decision.lowersRevenue ? 'LOW' : priority, effect,
+          action: decision.action,
           reason: `Цена ${ourPrice.toFixed(2)} ₽ (на ${ourDate}), медиана конкурентов ${compMed.toFixed(2)} ₽, разрыв ${gap.toFixed(2)} ₽`
         });
       }
