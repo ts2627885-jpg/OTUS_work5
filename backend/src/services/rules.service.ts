@@ -54,6 +54,21 @@ export function priceChangeEffect(p0: number, volumePerDay: number, deltaPrice: 
 }
 
 /**
+ * Текущая цена каждой АЗС конкурента: последний момент наблюдения. Если в этот момент записано
+ * несколько разных цен (параллельные ценовые ряды), берётся их среднее до копеек.
+ * Наблюдения: { competitor_id, ts — время наблюдения в виде строки «YYYY-MM-DD HH:MM:SS», price }.
+ */
+export function competitorLatestPrices(obs: { competitor_id: number; ts: string; price: number }[]): number[] {
+  const latest = new Map<number, { ts: string; prices: number[] }>();
+  for (const r of obs) {
+    const cur = latest.get(r.competitor_id);
+    if (!cur || r.ts > cur.ts) latest.set(r.competitor_id, { ts: r.ts, prices: [r.price] });
+    else if (r.ts === cur.ts) cur.prices.push(r.price);
+  }
+  return [...latest.values()].map(v => Math.round((v.prices.reduce((s, p) => s + p, 0) / v.prices.length) * 100) / 100);
+}
+
+/**
  * Действие PRICE-001 по цели выравнивания. Если модель оценена и переход к цели снижает выручку,
  * указание «Установить цену» не выводится: цена остаётся, а причина написана в действии.
  */
@@ -288,9 +303,7 @@ export async function computeRules(override?: { elasticityDays?: number }) {
 
       // Конкуренты: последнее наблюдение каждой АЗС конкурента за 14 дней (две АЗС одного бренда — два значения)
       const comp = compRows.filter(r => r.station_code === code && r.fuel_code === fuel && dayDiff(asOf, r.d) < S.comp_window_days);
-      const lastByCompetitor = new Map<number, number>();
-      for (const r of comp) lastByCompetitor.set(r.competitor_id, r.price); // comp отсортирован по времени
-      const compPrices = [...lastByCompetitor.values()];
+      const compPrices = competitorLatestPrices(comp);
       const compMed = median(compPrices);
       const compMax = compPrices.length ? Math.max(...compPrices) : null;
 
