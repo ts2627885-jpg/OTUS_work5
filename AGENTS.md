@@ -61,6 +61,6 @@ cd frontend && npm run format:check && npm run lint && npx vitest run && npm run
 - Переменных OAuth в Vercel нет (`OAUTH_*`, `GOOGLE_*`, `YANDEX_*`). Вход через провайдеров не работает, кнопок на странице входа нет — это ожидаемо.
 - Пароли учёток в продакшен-базе не сменены по решению владельца (принятый риск, см. `docs/SECURITY_AUDIT.md`).
 - Backend работает под ролью `azs_app`; проверены admin (все 5 станций) и manager1 (3 назначенные станции).
-- Аналитика и платежи не подключены.
+- Аналитика подключена (Яндекс.Метрика и Google Analytics 4, включаются переменными `VITE_YANDEX_METRIKA_ID` и `VITE_GOOGLE_ANALYTICS_ID`, см. `docs/ANALYTICS.md`). Платежи не подключены.
 - Перенос `set_config` внутрь основных запросов — отдельная задача, не начата. Ветка `perf-bind-context` с одним запросом для привязки роли слита в `main`, на замер эффекта не влияет заметно.
 - Ветки `monitoring` и `perf-db-context` слиты в `main`; `pipeline-test` на `work5` отстаёт от `main`; её удаление — решение владельца.
